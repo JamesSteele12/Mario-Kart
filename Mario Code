@@ -1,0 +1,592 @@
+require "timeout"
+require "io/console"
+
+
+class Character
+  attr_reader :name, :symbol, :is_player
+  attr_accessor :current_speed, :current_power_up, :current_location
+  attr_accessor :distance_travelled, :current_delay, :current_standing
+  attr_accessor :power_up_timer, :using_star
+
+  def initialize(name)
+    @name = name
+    @current_power_up = nil
+    @current_speed = 0.85
+    @symbol = name[0]
+    @is_player = false
+    @current_standing = 1
+    #first number is track slice, second is location from left to right
+    @current_location = [0,7]
+    #mainly to keep track of the CPU locations
+    @distance_travelled = 0
+    @current_delay = 0
+    @power_up_timer = 0
+    @using_star = false
+  end
+
+  def add_power_up(power_up)
+    @current_power_up = power_up
+  end
+
+  def to_s
+    return @name
+  end
+
+  def make_player
+    @is_player = true
+    @current_speed = 1
+  end
+
+  def print_standing
+    puts @current_standing
+  end
+
+end
+
+class PowerUp
+  attr_reader :name
+  attr_accessor :speed_multiplier, :delay_time, :duration
+
+  def initialize(name)
+    @name = name
+    @speed_multiplier = 1
+    @delay_time = 0
+    @duration = 0
+  end
+
+  def to_s
+    return @name
+  end
+
+end
+
+
+class ShellPowerUp < PowerUp
+  def initialize(name)
+    super
+    @delay_time = 2
+  end
+end
+
+
+class RaceTrack
+
+  attr_reader :track_array
+  attr_accessor :character_locations
+
+  def initialize(track_length, player, characters)
+    @characters = characters
+    @track_array = Array.new(track_length, "")
+    @track_array[0] = "   |       |   "
+    #iterating over a slice of the array, not the array itself
+    @track_array.slice(1, @track_array.length - 1).each_index do |track_index|
+      #add 1 to the index of the array to get the matching element
+      @track_array[track_index + 1] = lay_next_track(track_index + 1)
+    end
+
+    add_obstacles
+
+    #place the player's symbol at the center of the starting line
+    @track_array[0][7] = player.symbol
+
+    #create a hash that will contain all character locations including
+    #the player
+    @character_locations = Hash[@characters
+    	.map { |character| [character, character.current_location] }]
+  end
+
+  def to_s
+    return @track_array.reverse
+  end
+
+  def lay_track_direction(new_track_slice, left_bar_index, 
+  	                      right_bar_index, direction)
+    #helper subfunction to lay track
+    #direction must be from the strings "straight", "left", or "right"
+    if direction == "straight"
+      new_track_slice[left_bar_index] = "|"
+      new_track_slice[right_bar_index] = "|"
+    elsif direction == "left"
+      new_track_slice[left_bar_index - 1] = "\\"
+      new_track_slice[right_bar_index - 1] = "\\"
+    elsif direction == "right"
+      new_track_slice[left_bar_index + 1] = "/"
+      new_track_slice[right_bar_index + 1] = "/"
+    end
+  end
+
+  def lay_next_track(track_index)
+    #helper function to randomly initialize track
+    new_track_slice = " " * @track_array[track_index-1].length
+    if @track_array[track_index-1].include?("|")
+      left_bar_index = @track_array[track_index-1].index("|")
+      right_bar_index = left_bar_index + 8
+      dice_roll = rand(4)
+      #Have to check that the track isn't going out of the array bounds
+
+      if (dice_roll == 0) && (left_bar_index > 0)
+        lay_track_direction(new_track_slice, left_bar_index,
+        	                  right_bar_index, "left")
+      #Check the right side too
+      elsif (dice_roll == 3) && (right_bar_index < (@track_array[0]
+      	                                              .length - 1))
+        lay_track_direction(new_track_slice, left_bar_index,
+        	                  right_bar_index, "right")
+      else
+        lay_track_direction(new_track_slice, left_bar_index,
+        	                  right_bar_index, "straight")
+      end
+
+    elsif @track_array[track_index - 1].include?("\\")
+      left_bar_index = @track_array[track_index - 1].index("\\")
+      right_bar_index = left_bar_index + 8
+      dice_roll = rand(3)
+      if (dice_roll == 0) && (left_bar_index > 0)
+        lay_track_direction(new_track_slice, left_bar_index,
+        	                  right_bar_index, "left")
+      else
+        lay_track_direction(new_track_slice, left_bar_index,
+        	                  right_bar_index, "straight")
+      end
+
+    elsif @track_array[track_index - 1].include?("/")
+      left_bar_index = @track_array[track_index-1].index("/")
+      right_bar_index = left_bar_index + 8
+      dice_roll = rand(3)
+      if (dice_roll == 2) && (right_bar_index < (@track_array[0].length - 1))
+        lay_track_direction(new_track_slice, left_bar_index,
+        	                  right_bar_index, "right")
+      else
+        lay_track_direction(new_track_slice, left_bar_index,
+        	                  right_bar_index, "straight")
+      end
+    end
+    new_track_slice
+  end
+
+  def add_obstacles
+    #Helper function to add obstacles to the track randomly
+    #no obstacles for first 5 track_slices
+    wait_counter = 5
+    @track_array.each do |track_slice|
+      if wait_counter == 0
+        #33% chance to lay an obstacle
+        if rand(3) == 1
+          #33/33/33 chance of either a Rock, banana, or powerup
+          #Rocks are two characters wide
+          if rand(3) == 0
+            track_slice[(track_slice.split("")
+              .index { |x| ["\\", "|", "/"].include?(x) }) + rand(6) + 1] = "R"
+            track_slice[track_slice.index("R") + 1] = "R"
+          elsif rand(3) == 1
+            track_slice[(track_slice.split("")
+              .index { |x| ["\\", "|", "/"].include?(x) }) + rand(7) + 1] = "N"
+          else
+            track_slice[(track_slice.split("")
+            	.index { |x| ["\\", "|", "/"].include?(x) }) + rand(7) + 1] = "U"
+          end
+          #wait >= 3 track lengths to add a new obstacle
+          wait_counter = 3
+        end
+      else
+        wait_counter -= 1
+      end
+    end
+  end
+
+  def update_character_locations
+  	@characters.each do |character|
+      @character_locations[character] = character.current_location
+    end
+  end
+
+  def add_character_locations_to_map
+  	@characters.each do |character|
+      unless character.current_location[0] > @track_array.length-2
+      	@track_array.each do |slice|
+          if slice.include?(character.symbol)
+            slice[slice.index(character.symbol)] = " "
+          end
+        @track_array[character.current_location[0]][character
+        	.current_location[1]] = character.symbol
+        end
+      end
+    end
+  end
+
+end
+
+class Race
+  attr_reader :race_track, :player
+
+  #The character names and powerups are always the same and aren't modified
+  #so they can be class variables
+  #The characters themselves will be modified, so they need to be instance
+  #variables
+
+  def initialize
+
+	  @default_character_speed = 0.85
+	  @character_names = [
+	  	"Mario", "Luigi", "Toad", "Peach",
+	    "Bowser", "Yoshi", "Wario", "Dk"
+	  ]
+
+	  @blue_shell = ShellPowerUp.new("Blue Shell")
+	  @blue_shell.delay_time = 4
+	  @red_shell = ShellPowerUp.new("Red Shell")
+	  @green_shell = ShellPowerUp.new("Green Shell")
+	  @star = PowerUp.new("Star")
+	  @star.duration = 10
+	  @star.speed_multiplier = 2
+	  @star.delay_time = 2
+	  @golden_mushroom = PowerUp.new("Golden Mushroom")
+	  @golden_mushroom.duration = 10
+	  @golden_mushroom.speed_multiplier = 2
+	  @power_ups = [
+	  	@blue_shell, @red_shell, @green_shell,
+	  	@star, @golden_mushroom
+	  ]
+    @characters = []
+    @character_names.each do |name|
+      @characters << Character.new(name)
+    end
+    puts "Please choose your character from the following:"
+    puts @characters
+    player_name = gets.chomp.capitalize
+    until @character_names.include?(player_name)
+      puts "That is an invalid character choice."
+      puts "Please choose from the following:"
+      puts @characters
+      player_name = gets.chomp.capitalize
+    end
+  	@characters.each do |character|
+      if character.name == player_name then @player = character end
+    end
+    @player.make_player
+
+    puts "How long would you like your race to be (in track lengths)?"
+    #Make the track length equal to the number of seconds
+    @race_length = gets.chomp.to_i + 1
+    until @race_length >= 20 
+      puts "Please choose a race length of at least 20 seconds:"
+      @race_length = gets.chomp.to_i + 1
+    end
+    @race_track = RaceTrack.new(@race_length, @player, @characters)
+
+    #create a hash that contains the current standings by default
+    @current_standings = Hash.new
+    @characters.each_with_index do |character, character_index| 
+      @current_standings[character_index + 1] =  character
+    end
+    update_character_standings
+    @final_standings = []
+
+    puts "Press A to move left, B to move right, and W to go straight."
+    puts "Press Z to use PowerUps (U)."
+    puts "Watch out for rocks (RR) and banana peels (N)"
+    puts "Beware! You can't use a PowerUp and move left/right"
+    puts "at the same time\n\n"
+    sleep 3
+  end
+
+  def update_standings
+    character_slice_levels = Hash.new
+    @current_standings.values.each do |character| 
+      character_slice_levels[character] = character.current_location[0]
+    end
+    (1...@current_standings.length+1).each do |standing|
+      max_value_left = character_slice_levels.values.max
+      character_slice_levels.keys.each do |char|
+        if character_slice_levels[char] == max_value_left
+          @current_standings[standing] = char
+          character_slice_levels.delete(char)
+          break
+        end
+      end
+    end
+  end
+
+  def update_character_standings
+    #update the Character.current_standing attribute for each character
+    @current_standings.keys.each do |standing|
+      @current_standings[standing].current_standing = standing
+    end
+  end
+
+  def elapse_one_turn
+    if @player.current_delay > 0
+      turn_time = 1
+      @player.current_delay -= 1
+      sleep 1
+      puts "\n" * 50
+      if @player.current_delay == 0
+        @player.current_speed = 1
+      end
+    else
+      turn_time = (1.0 / @player.current_speed)
+      next_player_move = get_next_player_move(turn_time)
+      #print blank lines so it looks like a scrolling game
+      puts "\n" * 50
+
+      @player.current_location[0] += 1
+      case next_player_move
+      when "a"
+        @player.current_location[1] -= 1
+      when "d"
+        @player.current_location[1] += 1
+      when "z"
+        use_power_up(@player)
+      end
+    
+      player_obstacle = check_if_hit_obstacle(@player)
+      if player_obstacle == "wall"
+        @player.current_speed = 0
+        @player.current_delay = 5
+        @player.current_location[1] = place_character(@player)
+      elsif player_obstacle == "rock"
+        @player.current_speed = 0
+        @player.current_delay = 1
+        @player.current_location[1] = place_character(@player)
+      elsif player_obstacle == "banana"
+        @player.current_speed = 0
+        @player.current_delay = 2
+        @player.current_location[1] = place_character(@player)
+      elsif player_obstacle == "powerup"
+        @player.current_power_up = get_power_up(@player)
+      end
+    end
+
+    cool_down(@player)
+
+    @race_track.update_character_locations
+    @race_track.add_character_locations_to_map
+
+    #take characters out of the @characters array as they reach the finish line
+    @characters.each do |character|
+      if character.current_location[0] == (@race_length - 2)
+        @final_standings << character
+        if character == @player
+          puts "You placed #{@player.current_standing}/8"
+        else
+          @characters -= [character]
+        end
+      end
+    end
+
+    move_non_players(turn_time)
+
+    update_standings
+    update_character_standings
+
+    if !(@player.current_location[0] == @race_length - 2)
+      print_current_screen(@player.current_location[0])
+    end
+  end
+
+  def cool_down(character)
+    #helper function to deal with cooldowns for timers
+    if character.power_up_timer > 0
+      character.power_up_timer -= 1
+    elsif (character.power_up_timer == 0) && (character.current_speed > 1)
+      if character.is_player == true
+        character.current_speed = 1
+      else
+        character.current_speed = @default_character_speed
+      end
+    end
+
+    #make sure the character doesn't have star when it shouldn't
+    if (character.power_up_timer == 0) && (character.using_star == true)
+      character.using_star = false
+    end
+  end
+
+  def get_next_player_move(turn_time)
+    #function to get input for the next player move
+    begin
+      player_move = 
+        Timeout.timeout(turn_time) {
+          begin
+              system("stty raw -echo")
+              player_move = $stdin.getch.chr
+          ensure
+              system("stty -raw echo")
+          end
+        }
+    rescue Timeout::Error
+      player_move = "s"
+    end
+    ["a","d","z"].include?(player_move) ? player_move : "s"
+  end
+
+  def place_character(character)
+    #helper function for placing player/CPU
+    #avoids obstacles
+    current_character_slice = @race_track
+      .track_array[character.current_location[0]]
+    left_wall_index = current_character_slice
+      .split("").index { |x| ["\\", "|", "/"].include?(x) }
+    place_character_index = left_wall_index + 4
+    if current_character_slice[place_character_index] == "R"
+      place_character_index += 2
+    elsif ["N", "U"].include?(current_character_slice[place_character_index])
+      place_character_index += 1
+    end
+    place_character_index
+  end
+
+  def check_if_hit_obstacle(character)
+    #checks to see if a character hit an obstacle - checks for powerups too
+    current_character_slice = @race_track
+      .track_array[character.current_location[0]]
+    current_char_location_string = @race_track.track_array[character
+    	.current_location[0]][character.current_location[1]]
+    left_wall_index = current_character_slice
+      .split("").index { |x| ["\\", "|", "/"].include?(x) }
+    #check to see if the player ran into the wall
+    #also check to make sure the player didn't go outside the wall
+    if (["\\","|","/"].include?(current_char_location_string))
+      "wall"
+    elsif (character.current_location[1] > (left_wall_index + 8)) || (character
+    	.current_location[1] < left_wall_index)
+      "wall"
+    elsif current_char_location_string == "R"
+      "rock"
+    elsif current_char_location_string == "N"
+      "banana"
+    elsif current_char_location_string == "U"
+      "powerup"
+    end
+  end
+
+  def move_non_players(turn_time)
+    #move all non-players along for one turn
+    #also do any other moves that go along with a turn
+    #Have CPU go up the middle and avoid all obstacles
+    @characters.each do |character|
+      if !(character.is_player)
+        if character.current_delay > 0
+          character.current_delay -= 1
+          if character.current_delay == 0
+            character.current_speed = 1
+          end
+        else
+          character.distance_travelled += turn_time * character.current_speed
+          character.current_location[0] = character.distance_travelled.to_i
+          unless character.current_location[0] > @race_length - 2
+            character.current_location[1] = place_character(character)
+          end
+          if character.current_power_up != nil
+            puts "#{character.name} used #{character.current_power_up.name}"
+            use_power_up(character)
+          else
+            character.current_power_up = cpu_power_ups(character)
+          end
+        end
+        cool_down(character)
+      end      
+    end
+  end
+
+  def get_power_up(character)
+    #gives out a powerup
+    standing = character.current_standing
+    power_up_roll = rand(25)
+    if (1..(standing - 1)).to_a.include?(power_up_roll)
+      @star
+    elsif ((standing - 1)..(2 * (standing - 1))).to_a.include?(power_up_roll)
+      @blue_shell
+    elsif (2 * (standing - 1)..(3 * standing - 2)).to_a.include?(power_up_roll)
+      @golden_mushroom
+    elsif (((3 * standing - 2)..(3 * standing - 2) + (standing - 1) * 3)
+    	.to_a.include?(power_up_roll)) && (standing <= 5)
+      @red_shell
+    elsif (((3 * standing - 2)..((3 * standing - 2) + ((9 - standing) * 3)))
+    	.to_a.include?(power_up_roll)) && (standing > 5)
+      @red_shell
+    else
+      @green_shell
+    end
+  end
+
+  def use_power_up(character)
+    case character.current_power_up 
+    when @blue_shell
+      if @current_standings[1].using_star != true
+        @current_standings[1].current_delay += @blue_shell.delay_time
+      end
+    when @red_shell
+      if character.current_standing != 1  
+        if @current_standings[character.current_standing - 1]
+        	.using_star != true
+          @current_standings[character.current_standing - 1]
+            .current_delay += @red_shell.delay_time
+        end
+      end
+    when @green_shell
+      if character.current_standing != 1
+        if rand(3) == 0
+          if @current_standings[character.current_standing - 1]
+          	.using_star != true
+            @current_standings[character.current_standing - 1]
+              .current_delay += @green_shell.delay_time
+          end
+        end
+      end
+    when @star
+      character.using_star = true
+      character.current_speed = @star.speed_multiplier
+      character.power_up_timer = @star.duration
+      @current_standings.keys.each do |standing|
+        if standing < character.current_standing
+          if !@current_standings[standing].using_star
+            @current_standings[standing].current_delay += @star.delay_time
+          end
+        end
+      end
+    when @golden_mushroom
+      #using golden mushroom gets rid of star power
+      character.using_star = false
+      character.current_speed = @golden_mushroom.speed_multiplier
+      character.power_up_timer = @golden_mushroom.duration
+    end
+    character.current_power_up = nil
+  end
+
+  def cpu_power_ups(character)
+    if rand(35) == 0 then get_power_up(character) end
+  end
+
+  def print_current_screen(beginning)
+    #displays the part of the track the user will see at each instance
+    if @player.current_delay > 0
+      puts "Delay Time: #{@player.current_delay}"
+    end
+    num_slices = 7
+    if (beginning + num_slices) < @race_length - 2
+      @race_track.track_array.slice(beginning, num_slices).reverse
+        .each { |track| puts track }
+    else
+      @race_track.track_array.slice(beginning, @race_length - 2 - beginning)
+        .reverse.each { |track| puts track }
+    end
+    player_position = @player.current_location[0]
+    puts "#{@player.current_standing}/8"
+    puts "Power_Up: #{@player.current_power_up}"
+    puts "Track Position: #{player_position + 1}/#{@race_length - 1}"
+  end
+
+  def play
+    elapse_one_turn until @player.current_location[0] >= @race_length - 2
+  end
+
+end
+
+play_again = "Y"
+while play_again == "Y"
+  race = Race.new
+  race.play
+  puts "Play again? (Y or N)"
+  play_again = gets.chomp.upcase
+end
